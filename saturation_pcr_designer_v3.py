@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-22c-trick Saturation PCR Designer - Streamlit GUI版
+22c-trick Saturation PCR Designer - Streamlit GUI版 (デバッグ強化版)
 NEBuilder最適化プライマー設計ツール
 """
 
@@ -76,15 +76,6 @@ class OptimizedSaturationDesigner:
             'NcoI': {'sequence': 'CCATGG', 'cut_pos': 1},
             'NdeI': {'sequence': 'CATATG', 'cut_pos': 2}
         }
-    
-    def translate_dna(self, dna_seq: str) -> str:
-        """DNA配列をアミノ酸配列に翻訳"""
-        protein = ""
-        for i in range(0, len(dna_seq), 3):
-            codon = dna_seq[i:i+3]
-            if len(codon) == 3:
-                protein += self.genetic_code.get(codon, 'X')
-        return protein
     
     def find_restriction_sites(self, template_seq: str) -> Dict[str, List[int]]:
         """テンプレート配列中の制限酵素サイトを検索"""
@@ -208,7 +199,7 @@ class OptimizedSaturationDesigner:
                                  selected_enzyme: str, selected_position: int, 
                                  mutation_positions: List[int], gene_name: str, 
                                  overlap_length: int = 20) -> List[Dict]:
-        """制限酵素切断用のオリゴ設計"""
+        """制限酵素切断用のオリゴ設計（修正版）"""
         
         if selected_enzyme not in self.restriction_enzymes:
             return []
@@ -216,20 +207,62 @@ class OptimizedSaturationDesigner:
         enzyme_data = self.restriction_enzymes[selected_enzyme]
         recognition_seq = enzyme_data['sequence']
         
-        # 制限酵素サイト + 20bp上流を相同配列とする
-        upstream_start = max(0, selected_position - 20)
+        # デバッグ情報を収集
+        debug_info = {
+            'enzyme': selected_enzyme,
+            'recognition_seq': recognition_seq,
+            'site_position': selected_position,
+            'recognition_length': len(recognition_seq),
+            'template_length': len(template_seq)
+        }
+        
+        # 制限酵素サイトから20bp上流を開始点とする
+        upstream_length = 20
+        upstream_start = max(0, selected_position - upstream_length)
         restriction_end = selected_position + len(recognition_seq)
         
-        # 相同配列
+        # 実際の上流長を計算（配列の開始に近い場合は短くなる可能性）
+        actual_upstream_length = selected_position - upstream_start
+        
+        debug_info.update({
+            'upstream_start': upstream_start,
+            'restriction_end': restriction_end,
+            'actual_upstream_length': actual_upstream_length,
+            'total_homology_length': restriction_end - upstream_start
+        })
+        
+        # 相同配列（上流20bp + 制限酵素サイト）
         homology_seq = template_seq[upstream_start:restriction_end]
+        
+        # さらに下流にも配列を伸ばして十分な長さを確保
+        # NEBuilderには通常40-60bpの相同配列が推奨される
+        min_homology_length = 40
+        if len(homology_seq) < min_homology_length:
+            # 下流に伸ばす
+            extension_needed = min_homology_length - len(homology_seq)
+            extended_end = min(len(template_seq), restriction_end + extension_needed)
+            homology_seq = template_seq[upstream_start:extended_end]
+            debug_info['extended_end'] = extended_end
+            debug_info['final_length'] = len(homology_seq)
         
         # NEBuilder用オリゴ設計（制限酵素サイトを利用）
         restriction_oligos = []
         
+        # デバッグ情報を最初のエントリーとして追加
+        restriction_oligos.append({
+            'name': f"{gene_name}_Debug_Info",
+            'sequence': f"Debug: {debug_info}",
+            'length': 0,
+            'tm': 'N/A',
+            'type': 'Debug_Info',
+            'purpose': 'Debug information',
+            'description': f'Site: {selected_position}-{restriction_end}, Upstream: {actual_upstream_length}bp'
+        })
+        
         # 制限酵素サイト情報
         restriction_oligos.append({
             'name': f"{gene_name}_Restriction_Info",
-            'sequence': f"{selected_enzyme}: {recognition_seq} at position {selected_position}",
+            'sequence': f"Site: {recognition_seq} at position {selected_position}-{restriction_end}",
             'length': len(recognition_seq),
             'tm': 'N/A',
             'type': 'Restriction_Info',
@@ -245,7 +278,7 @@ class OptimizedSaturationDesigner:
             'tm': round(self.calculate_tm(homology_seq), 1),
             'type': 'Vector_Forward',
             'purpose': 'Vector linearization (Forward)',
-            'description': f'20bp upstream + {selected_enzyme} site'
+            'description': f'{actual_upstream_length}bp upstream + {selected_enzyme} site + extension'
         })
         
         # 対応するリバースオリゴも設計
@@ -260,480 +293,46 @@ class OptimizedSaturationDesigner:
             'description': f'Reverse complement of forward vector oligo'
         })
         
-        return restriction_oligos
-    
-    def highlight_sequence(self, sequence: str, highlights: List[Dict]) -> str:
-        """配列をハイライト表示用のHTMLに変換"""
-        html_sequence = ""
-        i = 0
-        
-        while i < len(sequence):
-            # 現在位置がハイライト対象かチェック
-            highlight_found = False
-            
-            for highlight in highlights:
-                start = highlight['start']
-                end = highlight['end']
-                color = highlight.get('color', '#ffeb3b')
-                label = highlight.get('label', '')
-                
-                if i == start:
-                    # ハイライト開始
-                    length = end - start
-                    highlighted_text = sequence[start:end]
-                    html_sequence += f'<span style="background-color: {color}; padding: 2px; border-radius: 3px;" title="{label}">{highlighted_text}</span>'
-                    i = end
-                    highlight_found = True
-                    break
-            
-            if not highlight_found:
-                html_sequence += sequence[i]
-                i += 1
-        
-        return html_sequence
-    
-    def display_protein_sequence_with_highlights(self, protein_seq: str, mutation_positions: List[int] = None) -> None:
-        """アミノ酸配列をハイライト付きで表示"""
-        st.markdown("### アミノ酸配列")
-        
-        # ハイライト位置を準備
-        highlights = []
+        # Insert用の相同配列も設計（Saturationプライマーとのオーバーラップ用）
+        # mutation_positionsの前後に相同配列を設計
         if mutation_positions:
-            for pos in mutation_positions:
-                if 1 <= pos <= len(protein_seq):
-                    highlights.append({
-                        'start': pos - 1,  # 0-based
-                        'end': pos,
-                        'color': '#ff9800',
-                        'label': f'変異位置 {pos}: {protein_seq[pos-1]}'
-                    })
-        
-        # 50アミノ酸ずつ表示
-        for i in range(0, len(protein_seq), 50):
-            line_start = i + 1
-            line_end = min(i + 50, len(protein_seq))
-            line_seq = protein_seq[i:line_end]
+            # 最初の変異位置の前
+            first_mutation_pos = min(mutation_positions)
+            insert_start = max(0, first_mutation_pos - overlap_length)
             
-            # この行のハイライトを抽出
-            line_highlights = []
-            for highlight in highlights:
-                if i <= highlight['start'] < line_end:
-                    line_highlights.append({
-                        'start': highlight['start'] - i,
-                        'end': min(highlight['end'] - i, len(line_seq)),
-                        'color': highlight['color'],
-                        'label': highlight['label']
-                    })
+            # 最後の変異位置の後
+            last_mutation_pos = max(mutation_positions)
+            insert_end = min(len(template_seq), last_mutation_pos + 3 + overlap_length)  # +3はコドン長
             
-            # 位置番号表示
-            pos_numbers = "".join([f"{j:>2}" if (j-1) % 10 == 0 else "  " for j in range(line_start, line_end + 1)])
-            st.text(f"Position: {pos_numbers}")
-            
-            # ハイライト付き配列表示
-            if line_highlights:
-                highlighted_seq = self.highlight_sequence(line_seq, line_highlights)
-                st.markdown(f"**{line_start:>3}-{line_end:>3}:** " + highlighted_seq, unsafe_allow_html=True)
-            else:
-                seq_str = "".join([f"{aa:>2}" for aa in line_seq])
-                st.text(f"{line_start:>3}-{line_end:>3}: {seq_str}")
-            
-            st.markdown("---")
-    
-    def highlight_oligo_sequence(self, oligo_seq: str, template_seq: str, mutation_positions: List[int] = None, 
-                                restriction_site: str = None, restriction_pos: int = None, 
-                                vector_method: str = "PCR") -> str:
-        """オリゴ配列をハイライト表示用のHTMLに変換（ベクター方法対応）"""
-        
-        # テンプレート配列内でのオリゴの位置を特定
-        oligo_start = template_seq.find(oligo_seq[:20]) if len(oligo_seq) >= 20 else template_seq.find(oligo_seq)
-        
-        if oligo_start == -1:
-            # 完全一致しない場合は、逆相補を試す
-            rev_comp = self.reverse_complement(oligo_seq)
-            oligo_start = template_seq.find(rev_comp[:20]) if len(rev_comp) >= 20 else template_seq.find(rev_comp)
-        
-        highlights = []
-        
-        # 変異位置をハイライト
-        if mutation_positions and oligo_start != -1:
-            for pos in mutation_positions:
-                mut_start_dna = (pos - 1) * 3  # アミノ酸→DNA位置
-                if oligo_start <= mut_start_dna < oligo_start + len(oligo_seq):
-                    rel_start = mut_start_dna - oligo_start
-                    rel_end = min(rel_start + 3, len(oligo_seq))
-                    highlights.append({
-                        'start': rel_start,
-                        'end': rel_end,
-                        'color': '#ff9800',
-                        'label': f'変異位置 {pos}'
-                    })
-        
-        # 制限酵素サイトをハイライト
-        if restriction_site and restriction_pos is not None and oligo_start != -1:
-            if oligo_start <= restriction_pos < oligo_start + len(oligo_seq):
-                rel_start = restriction_pos - oligo_start
-                rel_end = min(rel_start + len(restriction_site), len(oligo_seq))
-                highlights.append({
-                    'start': rel_start,
-                    'end': rel_end,
-                    'color': '#4caf50',
-                    'label': f'制限酵素サイト: {restriction_site}'
+            # Insert前側相同配列
+            insert_5_homology = template_seq[insert_start:first_mutation_pos]
+            if len(insert_5_homology) >= 15:  # 最小相同長
+                restriction_oligos.append({
+                    'name': f"{gene_name}_Insert_5_Homology",
+                    'sequence': insert_5_homology,
+                    'length': len(insert_5_homology),
+                    'tm': round(self.calculate_tm(insert_5_homology), 1),
+                    'type': 'Insert_Homology',
+                    'purpose': 'Insert 5\' homology for NEBuilder',
+                    'description': f'5\' homology sequence for insert assembly'
                 })
-        
-        # ベクター方法に応じたハイライト
-        if vector_method == "PCR" and len(oligo_seq) > 40:
-            # PCRモード: オーバーラップ領域をハイライト（最初と最後の20bp）
-            highlights.extend([
-                {
-                    'start': 0,
-                    'end': 20,
-                    'color': '#2196f3',
-                    'label': 'オーバーラップ領域（5\'側）'
-                },
-                {
-                    'start': len(oligo_seq) - 20,
-                    'end': len(oligo_seq),
-                    'color': '#2196f3',
-                    'label': 'オーバーラップ領域（3\'側）'
-                }
-            ])
-        elif vector_method == "制限酵素" and len(oligo_seq) > 40:
-            # 制限酵素モード: Vector相同領域をハイライト（5'側のみ）
-            highlights.append({
-                'start': 0,
-                'end': 20,
-                'color': '#9c27b0',
-                'label': 'Vector相同領域（5\'側）'
-            })
-        
-        return self.highlight_sequence(oligo_seq, highlights)
-    
-    def find_restriction_sites(self, template_seq: str) -> Dict[str, List[int]]:
-        """テンプレート配列中の制限酵素サイトを検索"""
-        sites = {}
-        
-        for enzyme_name, enzyme_data in self.restriction_enzymes.items():
-            recognition_seq = enzyme_data['sequence']
-            positions = []
             
-            # 順方向検索
-            start = 0
-            while True:
-                pos = template_seq.find(recognition_seq, start)
-                if pos == -1:
-                    break
-                positions.append(pos)
-                start = pos + 1
-            
-            # 逆相補も検索
-            rev_comp_seq = self.reverse_complement(recognition_seq)
-            if rev_comp_seq != recognition_seq:  # 回文配列でない場合
-                start = 0
-                while True:
-                    pos = template_seq.find(rev_comp_seq, start)
-                    if pos == -1:
-                        break
-                    positions.append(pos)
-                    start = pos + 1
-            
-            if positions:
-                sites[enzyme_name] = sorted(set(positions))
-        
-        return sites
-    
-    def design_nebuilder_primers(self, template_seq: str, mutation_positions: List[int], 
-                                gene_name: str = "Gene", overlap_length: int = 20,
-                                vector_method: str = "PCR", restriction_enzyme: str = None,
-                                restriction_position: int = None, max_primer_length: int = 80) -> Tuple[List[Dict], List[Dict]]:
-        """NEBuilder最適化プライマー設計（ベクター準備方法対応）"""
-        
-        # Saturation mutagenesis用プライマー設計
-        if len(mutation_positions) == 1:
-            sat_primers = self._design_single_nebuilder(template_seq, mutation_positions[0], gene_name, overlap_length, max_primer_length)
-        elif len(mutation_positions) == 2:
-            sat_primers = self._design_double_nebuilder(template_seq, mutation_positions, gene_name, overlap_length, max_primer_length)
-        else:
-            raise ValueError("1〜2箇所の変異位置のみ対応")
-        
-        # ベクター用オリゴ設計
-        vector_oligos = []
-        
-        if vector_method == "PCR":
-            # PCR用オリゴ設計
-            vector_oligos = self.design_pcr_oligos(sat_primers, gene_name)
-        elif vector_method == "制限酵素" and restriction_enzyme and restriction_position is not None:
-            # 制限酵素用オリゴ設計
-            restriction_sites = self.find_restriction_sites(template_seq)
-            vector_oligos = self.design_restriction_oligos(
-                template_seq, restriction_sites, restriction_enzyme, 
-                restriction_position, mutation_positions, gene_name, overlap_length
-            )
-        
-        return sat_primers, vector_oligos
-    
-    def calculate_statistics(self, sat_primers: List[Dict], vector_oligos: List[Dict], num_positions: int) -> Dict:
-        """ライブラリー統計の計算（ベクターオリゴ含む）"""
-        if not sat_primers:
-            return {
-                'total_sat_primers': 0,
-                'total_vector_oligos': len(vector_oligos),
-                'total_combinations': 0,
-                'unique_amino_acids': 0,
-                'coverage_95_percent': 0,
-                'library_efficiency': 0,
-                'avg_primer_length': 0,
-                'avg_annealing_tm': 0
-            }
-        
-        total_combinations = sum(p.get('combinations', 0) for p in sat_primers)
-        unique_amino_acids = 20 ** num_positions
-        coverage_95 = math.ceil(-unique_amino_acids * math.log(1 - 0.95)) if unique_amino_acids > 0 else 0
-        
-        # 平均長・Tm計算（ゼロ除算回避）
-        avg_primer_length = sum(p.get('primer_length', 0) for p in sat_primers) / len(sat_primers) if sat_primers else 0
-        avg_annealing_tm = sum(p.get('forward_tm', 0) for p in sat_primers) / len(sat_primers) if sat_primers else 0
-        
-        return {
-            'total_sat_primers': len(sat_primers),
-            'total_vector_oligos': len(vector_oligos),
-            'total_combinations': total_combinations,
-            'unique_amino_acids': unique_amino_acids,
-            'coverage_95_percent': coverage_95,
-            'library_efficiency': unique_amino_acids / total_combinations if total_combinations > 0 else 0,
-            'avg_primer_length': avg_primer_length,
-            'avg_annealing_tm': avg_annealing_tm
-        }
-    
-    # 改良された基本メソッド（最大長制限付き、エラーハンドリング強化）
-    def _design_single_nebuilder(self, template_seq: str, position: int, gene_name: str, overlap_length: int, max_primer_length: int) -> List[Dict]:
-        """1箇所変異用（最大長制限付き、エラーハンドリング強化）"""
-        primers = []
-        primer_designs = [('NDT', 12, 1), ('VHG', 9, 2), ('TGG', 1, 3)]
-        
-        # 位置の安全性チェック
-        if position < 0 or position + 3 > len(template_seq):
-            return primers
-        
-        for codon_type, combinations, primer_num in primer_designs:
-            try:
-                # アニーリング部分の設計（最小18bp, Tm≥55°C）
-                annealing_start = max(0, position - 15)
-                annealing_end = min(len(template_seq), position + 3 + 15)
-                
-                # 変異を含むアニーリング領域
-                left_part = template_seq[annealing_start:position]
-                right_part = template_seq[position + 3:annealing_end]
-                annealing_region = left_part + codon_type + right_part
-                
-                # オーバーラップ領域を追加
-                left_overlap = template_seq[max(0, annealing_start - overlap_length):annealing_start]
-                right_overlap = template_seq[annealing_end:min(len(template_seq), annealing_end + overlap_length)]
-                
-                forward_seq = left_overlap + annealing_region + right_overlap
-                
-                # 最大長制限の適用
-                if len(forward_seq) > max_primer_length:
-                    excess = len(forward_seq) - max_primer_length
-                    left_cut = excess // 2
-                    right_cut = excess - left_cut
-                    forward_seq = forward_seq[left_cut:len(forward_seq) - right_cut]
-                
-                reverse_seq = self.reverse_complement(forward_seq)
-                
-                primers.append({
-                    'primer_number': primer_num,
-                    'codon_type': codon_type,
-                    'forward_name': f"{gene_name}_Sat_Fwd_P{primer_num}_{codon_type}",
-                    'forward_sequence': forward_seq,
-                    'forward_tm': round(self.calculate_tm(annealing_region), 1),
-                    'reverse_name': f"{gene_name}_Sat_Rev_P{primer_num}_{codon_type}",
-                    'reverse_sequence': reverse_seq,
-                    'reverse_tm': round(self.calculate_tm(annealing_region), 1),
-                    'combinations': combinations,
-                    'mixing_ratio': combinations,
-                    'primer_length': len(forward_seq),
-                    'annealing_length': len(annealing_region),
-                    'overlap_length': overlap_length
+            # Insert後側相同配列
+            insert_3_homology = template_seq[last_mutation_pos + 3:insert_end]
+            if len(insert_3_homology) >= 15:  # 最小相同長
+                restriction_oligos.append({
+                    'name': f"{gene_name}_Insert_3_Homology",
+                    'sequence': insert_3_homology,
+                    'length': len(insert_3_homology),
+                    'tm': round(self.calculate_tm(insert_3_homology), 1),
+                    'type': 'Insert_Homology',
+                    'purpose': 'Insert 3\' homology for NEBuilder',
+                    'description': f'3\' homology sequence for insert assembly'
                 })
-            except Exception as e:
-                # エラーが発生した場合はスキップ
-                continue
-                
-        return primers
-    
-    def _design_double_nebuilder(self, template_seq: str, positions: List[int], gene_name: str, overlap_length: int, max_primer_length: int) -> List[Dict]:
-        """2箇所変異用（最大長制限付き、エラーハンドリング強化）"""
-        primers = []
-        
-        if len(positions) != 2:
-            return primers
-            
-        pos1, pos2 = sorted(positions)
-        
-        # 位置の安全性チェック
-        if pos1 < 0 or pos2 + 3 > len(template_seq) or pos1 >= pos2:
-            return primers
-        
-        primer_designs = [
-            ('NDT', 'NDT', 1, 144), ('VHG', 'VHG', 2, 81), ('NDT', 'VHG', 3, 108),
-            ('VHG', 'NDT', 4, 108), ('NDT', 'TGG', 5, 12), ('TGG', 'NDT', 6, 12),
-            ('VHG', 'TGG', 7, 9), ('TGG', 'VHG', 8, 9), ('TGG', 'TGG', 9, 1)
-        ]
-        
-        for codon1, codon2, primer_num, combinations in primer_designs:
-            try:
-                # アニーリング部分の設計
-                annealing_start = max(0, pos1 - 12)
-                annealing_end = min(len(template_seq), pos2 + 3 + 12)
-                
-                left_part = template_seq[annealing_start:pos1]
-                middle_part = template_seq[pos1 + 3:pos2]
-                right_part = template_seq[pos2 + 3:annealing_end]
-                annealing_region = left_part + codon1 + middle_part + codon2 + right_part
-                
-                # オーバーラップ領域を追加
-                left_overlap = template_seq[max(0, annealing_start - overlap_length):annealing_start]
-                right_overlap = template_seq[annealing_end:min(len(template_seq), annealing_end + overlap_length)]
-                
-                forward_seq = left_overlap + annealing_region + right_overlap
-                
-                # 最大長制限の適用
-                if len(forward_seq) > max_primer_length:
-                    excess = len(forward_seq) - max_primer_length
-                    left_cut = excess // 2
-                    right_cut = excess - left_cut
-                    forward_seq = forward_seq[left_cut:len(forward_seq) - right_cut]
-                
-                reverse_seq = self.reverse_complement(forward_seq)
-                
-                primers.append({
-                    'primer_number': primer_num,
-                    'codon_types': [codon1, codon2],
-                    'forward_name': f"{gene_name}_Sat_Fwd_P{primer_num}_{codon1}{codon2}",
-                    'forward_sequence': forward_seq,
-                    'forward_tm': round(self.calculate_tm(annealing_region), 1),
-                    'reverse_name': f"{gene_name}_Sat_Rev_P{primer_num}_{codon1}{codon2}",
-                    'reverse_sequence': reverse_seq,
-                    'reverse_tm': round(self.calculate_tm(annealing_region), 1),
-                    'combinations': combinations,
-                    'mixing_ratio': combinations,
-                    'primer_length': len(forward_seq),
-                    'annealing_length': len(annealing_region),
-                    'overlap_length': overlap_length
-                })
-            except Exception as e:
-                # エラーが発生した場合はスキップ
-                continue
-                
-        return primers
-    
-    def design_pcr_oligos(self, sat_primers: List[Dict], gene_name: str) -> List[Dict]:
-        """PCR用オリゴ設計（Vector側との相同配列）"""
-        pcr_oligos = []
-        
-        if not sat_primers:
-            return pcr_oligos
-        
-        # フォワード・リバースそれぞれで共通配列を抽出
-        forward_seqs = [p['forward_sequence'] for p in sat_primers if 'forward_sequence' in p]
-        reverse_seqs = [p['reverse_sequence'] for p in sat_primers if 'reverse_sequence' in p]
-        
-        # 5'末端から共通配列を検索（Vector側とのオーバーラップ）
-        def find_common_prefix(sequences, min_length=18):
-            if not sequences:
-                return ""
-            min_len = min(len(seq) for seq in sequences)
-            if min_len < min_length:
-                return ""
-            
-            for i in range(min_length, min_len + 1):
-                if all(seq[:i] == sequences[0][:i] for seq in sequences):
-                    common_prefix = sequences[0][:i]
-                else:
-                    return sequences[0][:i-1] if i > min_length else sequences[0][:min_length]
-            return sequences[0][:min_len]
-        
-        # フォワードプライマー用PCRオリゴ（5'側Vector相同配列）
-        if forward_seqs:
-            forward_common = find_common_prefix(forward_seqs)
-            if len(forward_common) >= 18:
-                pcr_oligos.append({
-                    'name': f"{gene_name}_PCR_Vector_Fwd",
-                    'sequence': forward_common,
-                    'length': len(forward_common),
-                    'tm': round(self.calculate_tm(forward_common), 1),
-                    'type': 'PCR_Forward',
-                    'purpose': 'Vector amplification (Forward)',
-                    'description': f'Vector homology region (5\' end of forward primers)'
-                })
-        
-        # リバースプライマー用PCRオリゴ（5'側Vector相同配列）
-        if reverse_seqs:
-            reverse_common = find_common_prefix(reverse_seqs)
-            if len(reverse_common) >= 18:
-                pcr_oligos.append({
-                    'name': f"{gene_name}_PCR_Vector_Rev",
-                    'sequence': reverse_common,
-                    'length': len(reverse_common),
-                    'tm': round(self.calculate_tm(reverse_common), 1),
-                    'type': 'PCR_Reverse',
-                    'purpose': 'Vector amplification (Reverse)',
-                    'description': f'Vector homology region (5\' end of reverse primers)'
-                })
-        
-        return pcr_oligos
-    
-    def design_restriction_oligos(self, template_seq: str, restriction_sites: Dict[str, List[int]], 
-                                 selected_enzyme: str, selected_position: int, 
-                                 mutation_positions: List[int], gene_name: str, 
-                                 overlap_length: int) -> List[Dict]:
-        """制限酵素用オリゴ設計"""
-        
-        if selected_enzyme not in self.restriction_enzymes:
-            return []
-        
-        enzyme_data = self.restriction_enzymes[selected_enzyme]
-        recognition_seq = enzyme_data['sequence']
-        
-        restriction_oligos = []
-        
-        # 制限酵素サイト情報
-        restriction_oligos.append({
-            'name': f"{gene_name}_Restriction_Info",
-            'sequence': f"{selected_enzyme}: {recognition_seq} at position {selected_position}",
-            'length': len(recognition_seq),
-            'tm': 'N/A',
-            'type': 'Restriction_Info',
-            'purpose': 'Restriction enzyme information',
-            'description': f'Cut vector with {selected_enzyme} at position {selected_position}'
-        })
-        
-        # 制限酵素サイト + 上流20bpを相同配列とする
-        upstream_start = max(0, selected_position - 20)
-        restriction_end = selected_position + len(recognition_seq)
-        
-        # Vector線状化用オリゴ
-        if restriction_end <= len(template_seq):
-            vector_homology_seq = template_seq[upstream_start:restriction_end]
-            
-            restriction_oligos.append({
-                'name': f"{gene_name}_Vector_Linear_{selected_enzyme}",
-                'sequence': vector_homology_seq,
-                'length': len(vector_homology_seq),
-                'tm': round(self.calculate_tm(vector_homology_seq), 1),
-                'type': 'Restriction_Vector',
-                'purpose': 'Vector linearization',
-                'description': f'Homology for linearized vector (20bp upstream + {selected_enzyme} site)'
-            })
         
         return restriction_oligos
-        """DNA配列をアミノ酸配列に翻訳"""
-        protein = ""
-        for i in range(0, len(dna_seq), 3):
-            codon = dna_seq[i:i+3]
-            if len(codon) == 3:
-                protein += self.genetic_code.get(codon, 'X')
-        return protein
+    
+    def translate_dna(self, dna_seq: str) -> str:
         """DNA配列をアミノ酸配列に翻訳"""
         protein = ""
         for i in range(0, len(dna_seq), 3):
@@ -770,142 +369,6 @@ class OptimizedSaturationDesigner:
             gc_content = total_gc / len(seq) if len(seq) > 0 else 0
             return 64.9 + 41 * (gc_content - 16.4 / len(seq))
     
-    def highlight_sequence(self, sequence: str, highlights: List[Dict]) -> str:
-        """配列をハイライト表示用のHTMLに変換"""
-        html_sequence = ""
-        i = 0
-        
-        while i < len(sequence):
-            # 現在位置がハイライト対象かチェック
-            highlight_found = False
-            
-            for highlight in highlights:
-                start = highlight['start']
-                end = highlight['end']
-                color = highlight.get('color', '#ffeb3b')
-                label = highlight.get('label', '')
-                
-                if i == start:
-                    # ハイライト開始
-                    length = end - start
-                    highlighted_text = sequence[start:end]
-                    html_sequence += f'<span style="background-color: {color}; padding: 2px; border-radius: 3px;" title="{label}">{highlighted_text}</span>'
-                    i = end
-                    highlight_found = True
-                    break
-            
-            if not highlight_found:
-                html_sequence += sequence[i]
-                i += 1
-        
-        return html_sequence
-    
-    def display_protein_sequence_with_highlights(self, protein_seq: str, mutation_positions: List[int] = None) -> None:
-        """アミノ酸配列をハイライト付きで表示"""
-        st.markdown("### アミノ酸配列")
-        
-        # ハイライト位置を準備
-        highlights = []
-        if mutation_positions:
-            for pos in mutation_positions:
-                if 1 <= pos <= len(protein_seq):
-                    highlights.append({
-                        'start': pos - 1,  # 0-based
-                        'end': pos,
-                        'color': '#ff9800',
-                        'label': f'変異位置 {pos}: {protein_seq[pos-1]}'
-                    })
-        
-        # 50アミノ酸ずつ表示
-        for i in range(0, len(protein_seq), 50):
-            line_start = i + 1
-            line_end = min(i + 50, len(protein_seq))
-            line_seq = protein_seq[i:line_end]
-            
-            # この行のハイライトを抽出
-            line_highlights = []
-            for highlight in highlights:
-                if i <= highlight['start'] < line_end:
-                    line_highlights.append({
-                        'start': highlight['start'] - i,
-                        'end': min(highlight['end'] - i, len(line_seq)),
-                        'color': highlight['color'],
-                        'label': highlight['label']
-                    })
-            
-            # 位置番号表示
-            pos_numbers = "".join([f"{j:>2}" if (j-1) % 10 == 0 else "  " for j in range(line_start, line_end + 1)])
-            st.text(f"Position: {pos_numbers}")
-            
-            # ハイライト付き配列表示
-            if line_highlights:
-                highlighted_seq = self.highlight_sequence(line_seq, line_highlights)
-                st.markdown(f"**{line_start:>3}-{line_end:>3}:** " + highlighted_seq, unsafe_allow_html=True)
-            else:
-                seq_str = "".join([f"{aa:>2}" for aa in line_seq])
-                st.text(f"{line_start:>3}-{line_end:>3}: {seq_str}")
-            
-            st.markdown("---")
-    
-    def highlight_oligo_sequence(self, oligo_seq: str, template_seq: str, mutation_positions: List[int] = None, 
-                                restriction_site: str = None, restriction_pos: int = None) -> str:
-        """オリゴ配列をハイライト表示用のHTMLに変換"""
-        
-        # テンプレート配列内でのオリゴの位置を特定
-        oligo_start = template_seq.find(oligo_seq[:20]) if len(oligo_seq) >= 20 else template_seq.find(oligo_seq)
-        
-        if oligo_start == -1:
-            # 完全一致しない場合は、逆相補を試す
-            rev_comp = self.reverse_complement(oligo_seq)
-            oligo_start = template_seq.find(rev_comp[:20]) if len(rev_comp) >= 20 else template_seq.find(rev_comp)
-        
-        highlights = []
-        
-        # 変異位置をハイライト
-        if mutation_positions and oligo_start != -1:
-            for pos in mutation_positions:
-                mut_start_dna = (pos - 1) * 3  # アミノ酸→DNA位置
-                if oligo_start <= mut_start_dna < oligo_start + len(oligo_seq):
-                    rel_start = mut_start_dna - oligo_start
-                    rel_end = min(rel_start + 3, len(oligo_seq))
-                    highlights.append({
-                        'start': rel_start,
-                        'end': rel_end,
-                        'color': '#ff9800',
-                        'label': f'変異位置 {pos}'
-                    })
-        
-        # 制限酵素サイトをハイライト
-        if restriction_site and restriction_pos is not None and oligo_start != -1:
-            if oligo_start <= restriction_pos < oligo_start + len(oligo_seq):
-                rel_start = restriction_pos - oligo_start
-                rel_end = min(rel_start + len(restriction_site), len(oligo_seq))
-                highlights.append({
-                    'start': rel_start,
-                    'end': rel_end,
-                    'color': '#4caf50',
-                    'label': f'制限酵素サイト: {restriction_site}'
-                })
-        
-        # オーバーラップ領域をハイライト（最初と最後の20bp）
-        if len(oligo_seq) > 40:
-            highlights.extend([
-                {
-                    'start': 0,
-                    'end': 20,
-                    'color': '#2196f3',
-                    'label': 'オーバーラップ領域（5\'側）'
-                },
-                {
-                    'start': len(oligo_seq) - 20,
-                    'end': len(oligo_seq),
-                    'color': '#2196f3',
-                    'label': 'オーバーラップ領域（3\'側）'
-                }
-            ])
-        
-        return self.highlight_sequence(oligo_seq, highlights)
-    
     def design_nebuilder_primers(self, template_seq: str, mutation_positions: List[int], 
                                 gene_name: str = "Gene", overlap_length: int = 20,
                                 vector_method: str = "PCR", restriction_enzyme: str = None,
@@ -926,7 +389,7 @@ class OptimizedSaturationDesigner:
         if vector_method == "PCR":
             # PCR用オリゴ設計
             vector_oligos = self.design_pcr_oligos(sat_primers, gene_name)
-        elif vector_method == "Restriction" and restriction_enzyme and restriction_position is not None:
+        elif vector_method == "制限酵素" and restriction_enzyme and restriction_position is not None:
             # 制限酵素用オリゴ設計
             restriction_sites = self.find_restriction_sites(template_seq)
             vector_oligos = self.design_restriction_oligos(
@@ -937,7 +400,7 @@ class OptimizedSaturationDesigner:
         return sat_primers, vector_oligos
     
     def _find_optimal_annealing_region(self, template_seq: str, center_pos: int, min_length: int = 18, 
-                                     min_tm: float = 55.0, max_total: int = 60) -> Tuple[int, int]:
+                                     min_tm: float = 55.0, max_total: int = 100) -> Tuple[int, int]:
         """最適なアニーリング領域を見つける"""
         best_start, best_end = center_pos - min_length//2, center_pos + min_length//2
         
@@ -981,9 +444,9 @@ class OptimizedSaturationDesigner:
             reverse_seq = self.reverse_complement(forward_seq)
             
             # 長さ制限チェック
-            if len(forward_seq) > 60:
+            if len(forward_seq) > 100:
                 # 長すぎる場合はオーバーラップを調整
-                excess = len(forward_seq) - 60
+                excess = len(forward_seq) - 100
                 overlap_length_adj = max(15, overlap_length - excess//2)
                 left_overlap = template_seq[max(0, anneal_start - overlap_length_adj):anneal_start]
                 right_overlap = template_seq[anneal_end:min(len(template_seq), anneal_end + overlap_length_adj)]
@@ -1042,8 +505,8 @@ class OptimizedSaturationDesigner:
             reverse_seq = self.reverse_complement(forward_seq)
             
             # 長さ調整
-            if len(forward_seq) > 60:
-                excess = len(forward_seq) - 60
+            if len(forward_seq) > 100:
+                excess = len(forward_seq) - 100
                 overlap_length_adj = max(15, overlap_length - excess//2)
                 left_overlap = template_seq[max(0, anneal_start - overlap_length_adj):anneal_start]
                 right_overlap = template_seq[anneal_end:min(len(template_seq), anneal_end + overlap_length_adj)]
@@ -1095,13 +558,7 @@ def main():
     )
     
     st.title("🧬 22c-trick Saturation PCR Designer")
-    st.markdown("**NEBuilder最適化プライマー設計ツール**")
-    
-    # グローバルdesignerオブジェクトの初期化
-    if 'designer' not in st.session_state:
-        st.session_state.designer = OptimizedSaturationDesigner()
-    
-    designer = st.session_state.designer
+    st.markdown("**NEBuilder最適化プライマー設計ツール (デバッグ強化版)**")
     
     # サイドバー：設定
     with st.sidebar:
@@ -1118,13 +575,12 @@ def main():
         
         st.markdown("### プライマー設計条件")
         overlap_length = st.slider("オーバーラップ長 (bp)", 15, 25, 20, help="NEBuilder用オーバーラップ領域")
-        max_primer_length = st.slider("プライマー最大長 (bp)", 60, 100, 80, help="プライマーの最大長制限")
         
         st.info(f"""
         **設計条件:**
         - アニーリング部: Tm ≥ 55°C, ≥ 18bp
         - オーバーラップ: {overlap_length}bp
-        - 最大長: {max_primer_length}bp
+        - 全長: 40bp推奨, 最大100bp
         - ベクター準備: {vector_method}
         
         **入力形式:**
@@ -1239,7 +695,7 @@ def main():
         if not invalid_chars:  # 有効な配列の場合のみ処理
             st.header("🎯 変異位置選択")
             
-            # main関数で定義されたdesignerオブジェクトを使用
+            designer = OptimizedSaturationDesigner()
             protein_seq = designer.translate_dna(template_seq)
             aa_length = len(protein_seq)
             
@@ -1255,19 +711,6 @@ def main():
                 seq_str = "".join([f"{aa:>2}" for aa in line_seq])
                 
                 st.text(f"{line_start:>3}-{line_end:>3}: {seq_str}")
-        
-        # アミノ酸配列表示（10個ずつ）
-        st.markdown("### アミノ酸配列")
-        for i in range(0, len(protein_seq), 50):
-            line_start = i + 1
-            line_end = min(i + 50, len(protein_seq))
-            line_seq = protein_seq[i:line_end]
-            
-            # 位置番号を表示
-            pos_str = "".join([f"{j:>2}" if (j-1) % 10 == 0 else "  " for j in range(line_start, line_end + 1)])
-            seq_str = "".join([f"{aa:>2}" for aa in line_seq])
-            
-            st.text(f"{line_start:>3}-{line_end:>3}: {seq_str}")
         
         # アミノ酸位置選択
         st.subheader("🎯 変異位置選択")
@@ -1294,50 +737,65 @@ def main():
             else:
                 position_2 = None
         
-            # 制限酵素サイト選択（制限酵素モードの場合）
-            selected_enzyme = None
-            selected_position = None
+        # 制限酵素サイト選択（制限酵素モードの場合）
+        selected_enzyme = None
+        selected_position = None
+        
+        if vector_method == "制限酵素":
+            st.subheader("🔪 制限酵素サイト選択")
             
-            if vector_method == "制限酵素":
-                st.subheader("🔪 制限酵素サイト選択")
+            restriction_sites = designer.find_restriction_sites(template_seq)
+            
+            if restriction_sites:
+                # 制限酵素サイト表示
+                st.markdown("### 検出された制限酵素サイト")
                 
-                restriction_sites = designer.find_restriction_sites(template_seq)
+                site_options = []
+                for enzyme, positions in restriction_sites.items():
+                    for pos in positions:
+                        site_options.append({
+                            'enzyme': enzyme,
+                            'position': pos,
+                            'display': f"{enzyme} at {pos}bp ({designer.restriction_enzymes[enzyme]['sequence']})"
+                        })
                 
-                if restriction_sites:
-                    # 制限酵素サイト表示
-                    st.markdown("### 検出された制限酵素サイト")
+                if site_options:
+                    selected_site = st.selectbox(
+                        "使用する制限酵素サイトを選択",
+                        options=range(len(site_options)),
+                        format_func=lambda x: site_options[x]['display'],
+                        help="ベクター線状化に使用する制限酵素サイト"
+                    )
                     
-                    site_options = []
-                    for enzyme, positions in restriction_sites.items():
-                        for pos in positions:
-                            site_options.append({
-                                'enzyme': enzyme,
-                                'position': pos,
-                                'display': f"{enzyme} at {pos}bp ({designer.restriction_enzymes[enzyme]['sequence']})"
-                            })
+                    selected_enzyme = site_options[selected_site]['enzyme']
+                    selected_position = site_options[selected_site]['position']
                     
-                    if site_options:
-                        selected_site = st.selectbox(
-                            "使用する制限酵素サイトを選択",
-                            options=range(len(site_options)),
-                            format_func=lambda x: site_options[x]['display'],
-                            help="ベクター線状化に使用する制限酵素サイト"
-                        )
-                        
-                        selected_enzyme = site_options[selected_site]['enzyme']
-                        selected_position = site_options[selected_site]['position']
-                        
-                        st.success(f"✅ 選択: {selected_enzyme} at {selected_position}bp")
-                    else:
-                        st.warning("⚠️ 制限酵素サイトが見つかりませんでした")
+                    st.success(f"✅ 選択: {selected_enzyme} at {selected_position}bp")
+                    
+                    # デバッグ情報表示
+                    enzyme_seq = designer.restriction_enzymes[selected_enzyme]['sequence']
+                    upstream_start = max(0, selected_position - 20)
+                    restriction_end = selected_position + len(enzyme_seq)
+                    actual_upstream = selected_position - upstream_start
+                    
+                    st.info(f"""
+                    **制限酵素サイト詳細:**
+                    - 酵素: {selected_enzyme}
+                    - 認識配列: {enzyme_seq} ({len(enzyme_seq)}bp)
+                    - サイト位置: {selected_position}-{restriction_end}
+                    - 上流開始: {upstream_start} (実際の上流長: {actual_upstream}bp)
+                    - 予想相同配列長: {restriction_end - upstream_start}bp
+                    """)
                 else:
-                    st.warning("⚠️ 認識可能な制限酵素サイトがありません")
-                    st.info("💡 PCRモードを使用することをお勧めします")
-            
-            # 設計実行
-            design_ready = True
-            if vector_method == "制限酵素" and (selected_enzyme is None or selected_position is None):
-                design_ready = False
+                    st.warning("⚠️ 制限酵素サイトが見つかりませんでした")
+            else:
+                st.warning("⚠️ 認識可能な制限酵素サイトがありません")
+                st.info("💡 PCRモードを使用することをお勧めします")
+        
+        # 設計実行
+        design_ready = True
+        if vector_method == "制限酵素" and (selected_enzyme is None or selected_position is None):
+            design_ready = False
         
         if st.button("🚀 プライマー設計実行", type="primary", disabled=not design_ready):
             mutation_positions = [position_1]
@@ -1348,16 +806,10 @@ def main():
                 # DNA位置に変換（0-based）
                 dna_positions = [(pos - 1) * 3 for pos in mutation_positions]
                 
-                # プライマー設計（引数の順序を修正）
+                # プライマー設計（新しいAPI）
                 sat_primers, vector_oligos = designer.design_nebuilder_primers(
-                    template_seq=template_seq,
-                    mutation_positions=dna_positions, 
-                    gene_name=gene_name, 
-                    overlap_length=overlap_length,
-                    vector_method=vector_method, 
-                    restriction_enzyme=selected_enzyme, 
-                    restriction_position=selected_position, 
-                    max_primer_length=max_primer_length
+                    template_seq, dna_positions, gene_name, overlap_length,
+                    vector_method, selected_enzyme, selected_position
                 )
                 
                 # 統計計算
@@ -1367,10 +819,8 @@ def main():
                 st.session_state.sat_primers = sat_primers
                 st.session_state.vector_oligos = vector_oligos
                 st.session_state.stats = stats
-                st.session_state.mutation_positions = mutation_positions  # アミノ酸位置（1-based）
+                st.session_state.mutation_positions = mutation_positions
                 st.session_state.vector_method = vector_method
-                st.session_state.template_seq_used = template_seq  # 設計時のテンプレート配列を保存
-                st.session_state.max_primer_length = max_primer_length  # プライマー最大長を保存
     
     # 結果表示
     if 'sat_primers' in st.session_state:
@@ -1388,7 +838,7 @@ def main():
             st.metric("95%カバレッジ", f"{st.session_state.stats['coverage_95_percent']} クローン")
         with col5:
             st.metric("効率", f"{st.session_state.stats['library_efficiency']:.1%}")
-    
+        
         # ベクター準備方法の表示
         vector_method = st.session_state.get('vector_method', 'PCR')
         if vector_method == "PCR":
@@ -1401,28 +851,11 @@ def main():
         
         # Saturationプライマーテーブル作成
         sat_primer_data = []
-        template_seq_used = st.session_state.get('template_seq_used', st.session_state.get('template_seq', ''))
-        vector_method = st.session_state.get('vector_method', 'PCR')
-        
         for primer in st.session_state.sat_primers:
-            # ハイライト付き配列表示（ベクター方法を考慮）
-            highlighted_fwd = designer.highlight_oligo_sequence(
-                primer['forward_sequence'], 
-                template_seq_used, 
-                st.session_state.mutation_positions,
-                None, None, vector_method  # ベクター方法を渡す
-            )
-            highlighted_rev = designer.highlight_oligo_sequence(
-                primer['reverse_sequence'], 
-                template_seq_used, 
-                st.session_state.mutation_positions,
-                None, None, vector_method  # ベクター方法を渡す
-            )
-            
             sat_primer_data.extend([
                 {
                     'Name': primer['forward_name'],
-                    'Sequence': highlighted_fwd,
+                    'Sequence': primer['forward_sequence'],
                     'Length': primer['primer_length'],
                     'Annealing Tm': primer['forward_tm'],
                     'Type': 'Forward',
@@ -1431,7 +864,7 @@ def main():
                 },
                 {
                     'Name': primer['reverse_name'],
-                    'Sequence': highlighted_rev,
+                    'Sequence': primer['reverse_sequence'],
                     'Length': primer['primer_length'],
                     'Annealing Tm': primer['reverse_tm'],
                     'Type': 'Reverse',
@@ -1441,80 +874,17 @@ def main():
             ])
         
         sat_df = pd.DataFrame(sat_primer_data)
-        
-        # ハイライト付きテーブルの表示
-        st.markdown("#### プライマー配列（ハイライト表示）")
-        
-        # ハイライト凡例（ベクター方法に応じて変更）
-        legend_text = """
-        **ハイライト凡例:**
-        - <span style="background-color: #ff9800; padding: 2px 4px; border-radius: 3px;">変異位置</span>
-        """
-        
-        if vector_method == "PCR":
-            legend_text += """
-        - <span style="background-color: #2196f3; padding: 2px 4px; border-radius: 3px;">オーバーラップ領域</span>
-            """
-        else:  # 制限酵素モード
-            legend_text += """
-        - <span style="background-color: #9c27b0; padding: 2px 4px; border-radius: 3px;">Vector相同領域</span>
-            """
-        
-        st.markdown(legend_text, unsafe_allow_html=True)
-        
-        for _, row in sat_df.iterrows():
-            with st.expander(f"{row['Name']} (Tm: {row['Annealing Tm']}°C, Length: {row['Length']}bp)"):
-                st.markdown(f"**配列:** {row['Sequence']}", unsafe_allow_html=True)
-                st.markdown(f"**タイプ:** {row['Type']} | **混合比率:** {row['Mixing Ratio']} | **プライマー#:** {row['Primer #']}")
-        
-        # 通常のテーブル表示（配列はプレーンテキスト）
-        sat_df_plain = sat_df.copy()
-        for i, primer in enumerate(st.session_state.sat_primers):
-            sat_df_plain.loc[sat_df_plain['Name'] == primer['forward_name'], 'Sequence'] = primer['forward_sequence']
-            sat_df_plain.loc[sat_df_plain['Name'] == primer['reverse_name'], 'Sequence'] = primer['reverse_sequence']
-        
-        st.markdown("#### プライマー一覧（テーブル形式）")
-        st.dataframe(sat_df_plain, use_container_width=True)
+        st.dataframe(sat_df, use_container_width=True)
         
         # Vector用オリゴ詳細
         if st.session_state.vector_oligos:
             st.subheader(f"🔧 Vector用オリゴ ({vector_method})")
             
             vector_data = []
-            restriction_enzyme = None
-            restriction_position = None
-            
-            # 制限酵素情報の取得（制限酵素モードの場合）
-            if vector_method == "制限酵素":
-                for oligo in st.session_state.vector_oligos:
-                    if oligo['type'] == 'Restriction_Info':
-                        # 制限酵素情報を解析
-                        info_parts = oligo['sequence'].split()
-                        if len(info_parts) >= 4:
-                            restriction_enzyme = info_parts[0].rstrip(':')
-                            restriction_position = int(info_parts[3])
-                        break
-            
             for oligo in st.session_state.vector_oligos:
-                if oligo['type'] != 'Restriction_Info':  # 情報行は除く
-                    # ハイライト付き配列表示
-                    if len(str(oligo['sequence'])) > 10:  # 有効な配列のみ
-                        highlighted_seq = designer.highlight_oligo_sequence(
-                            oligo['sequence'], 
-                            template_seq_used, 
-                            st.session_state.mutation_positions,
-                            restriction_enzyme,
-                            restriction_position,
-                            vector_method  # ベクター方法を渡す
-                        )
-                    else:
-                        highlighted_seq = oligo['sequence']
-                else:
-                    highlighted_seq = oligo['sequence']
-                
                 vector_data.append({
                     'Name': oligo['name'],
-                    'Sequence': highlighted_seq,
+                    'Sequence': oligo['sequence'],
                     'Length': oligo['length'],
                     'Tm': oligo['tm'],
                     'Type': oligo['type'],
@@ -1523,42 +893,7 @@ def main():
                 })
             
             vector_df = pd.DataFrame(vector_data)
-            
-            # ハイライト付きVector オリゴ表示
-            st.markdown("#### Vector用オリゴ（ハイライト表示）")
-            
-            # ハイライト凡例（Vector用）
-            legend_text = """
-            **ハイライト凡例:**
-            """
-            if vector_method == "PCR":
-                legend_text += """
-            - <span style="background-color: #2196f3; padding: 2px 4px; border-radius: 3px;">Vector相同領域（5'側）</span>
-                """
-            else:  # 制限酵素モード
-                legend_text += """
-            - <span style="background-color: #4caf50; padding: 2px 4px; border-radius: 3px;">制限酵素認識配列</span>
-            - <span style="background-color: #9c27b0; padding: 2px 4px; border-radius: 3px;">Vector相同領域</span>
-                """
-            st.markdown(legend_text, unsafe_allow_html=True)
-            
-            for _, row in vector_df.iterrows():
-                if row['Type'] != 'Restriction_Info':
-                    with st.expander(f"{row['Name']} ({row['Purpose']})"):
-                        st.markdown(f"**配列:** {row['Sequence']}", unsafe_allow_html=True)
-                        st.markdown(f"**長さ:** {row['Length']}bp | **Tm:** {row['Tm']}°C")
-                        st.markdown(f"**説明:** {row['Description']}")
-                else:
-                    st.info(f"🔪 **制限酵素情報:** {row['Description']}")
-            
-            # 通常のテーブル表示
-            vector_df_plain = vector_df.copy()
-            for i, oligo in enumerate(st.session_state.vector_oligos):
-                mask = vector_df_plain['Name'] == oligo['name']
-                vector_df_plain.loc[mask, 'Sequence'] = oligo['sequence']
-            
-            st.markdown("#### Vector用オリゴ一覧（テーブル形式）")
-            st.dataframe(vector_df_plain, use_container_width=True)
+            st.dataframe(vector_df, use_container_width=True)
         
         # 混合比率表示
         st.subheader("⚗️ プライマー混合比率")
@@ -1581,70 +916,25 @@ def main():
         if vector_method == "PCR":
             st.markdown("""
             **PCRによるベクター準備:**
-            1. **Vector PCR**: Vector用PCRオリゴを使用してベクターを増幅
-               - Vector共通配列（5'側）をテンプレートに PCR
-               - 増幅産物を精製
-            2. **Insert PCR**: Saturation primersでinsert増幅
-               - 適切な混合比率でプライマーを混合
-               - insert PCR実行・精製
-            3. **NEBuilder Assembly**: PCR産物同士を組み立て
-               - Vector PCR産物 + Insert PCR産物
-               - NEBuilder HiFi DNA Assembly実行
+            1. Vector用PCRオリゴを使用してベクターを増幅
+            2. PCR産物を精製
+            3. Saturation primersでinsert増幅
+            4. NEBuilder HiFi DNA Assemblyで組み立て
             """)
         else:
-            # 制限酵素情報を取得
-            restriction_enzyme_info = "選択した制限酵素"
-            if st.session_state.vector_oligos:
-                for oligo in st.session_state.vector_oligos:
-                    if oligo['type'] == 'Restriction_Info':
-                        enzyme_name = oligo['sequence'].split(':')[0]
-                        restriction_enzyme_info = enzyme_name
-                        break
-            
-            st.markdown(f"""
+            st.markdown("""
             **制限酵素によるベクター準備:**
-            1. **Vector線状化**: {restriction_enzyme_info}でベクターを切断
-               - 制限酵素消化（37°C, 1-3時間）
-               - アルカリホスファターゼ処理（推奨）
-               - ベクターを精製
-            2. **Insert PCR**: Saturation primersでinsert増幅
-               - 適切な混合比率でプライマーを混合
-               - insert PCR実行・精製
-            3. **NEBuilder Assembly**: 線状化ベクター + Insert PCR産物
-               - Vector相同領域で組み立て
-               - NEBuilder HiFi DNA Assembly実行
+            1. 選択した制限酵素でベクターを線状化
+            2. ベクターを精製（アルカリホスファターゼ処理推奨）
+            3. Saturation primersでinsert増幅
+            4. NEBuilder HiFi DNA Assemblyで組み立て
             """)
         
         # ファイルダウンロード
         st.subheader("💾 ファイルダウンロード")
         
-        # 全オリゴの統合（プレーンテキスト版）
-        all_oligos = []
-        
-        # Saturation primers追加（プレーンテキスト）
-        for primer in st.session_state.sat_primers:
-            all_oligos.extend([
-                {
-                    'Name': primer['forward_name'],
-                    'Sequence': primer['forward_sequence'],
-                    'Length': primer['primer_length'],
-                    'Annealing Tm': primer['forward_tm'],
-                    'Type': 'Forward',
-                    'Mixing Ratio': primer['mixing_ratio'],
-                    'Primer #': primer['primer_number']
-                },
-                {
-                    'Name': primer['reverse_name'],
-                    'Sequence': primer['reverse_sequence'],
-                    'Length': primer['primer_length'],
-                    'Annealing Tm': primer['reverse_tm'],
-                    'Type': 'Reverse',
-                    'Mixing Ratio': primer['mixing_ratio'],
-                    'Primer #': primer['primer_number']
-                }
-            ])
-        
-        # Vector oligos追加（プレーンテキスト）
+        # 全オリゴの統合
+        all_oligos = sat_primer_data.copy()
         if st.session_state.vector_oligos:
             for oligo in st.session_state.vector_oligos:
                 all_oligos.append({
@@ -1690,7 +980,6 @@ def main():
 Gene: {gene_name}
 Vector Method: {vector_method}
 Mutation positions: {', '.join(map(str, st.session_state.mutation_positions))}
-Max primer length: {st.session_state.get('max_primer_length', 80)} bp
 
 Statistics:
 - Saturation primers: {st.session_state.stats['total_sat_primers']}
@@ -1711,12 +1000,10 @@ Mixing Ratios (Saturation Primers):
                 stats_text += f"\nRestriction enzyme protocol:\n"
                 stats_text += f"- Use selected restriction enzyme for vector linearization\n"
                 stats_text += f"- Treat with alkaline phosphatase if needed\n"
-                stats_text += f"- Ensure complete digestion before assembly\n"
             else:
                 stats_text += f"\nPCR protocol:\n"
                 stats_text += f"- Use Vector PCR oligos for vector amplification\n"
                 stats_text += f"- Purify PCR products before assembly\n"
-                stats_text += f"- Check vector amplification by gel electrophoresis\n"
             
             st.download_button(
                 "📈 実験レポート (TXT)",
