@@ -328,7 +328,7 @@ class OptimizedSaturationDesigner:
         return sat_primers, vector_oligos
     
     def _find_optimal_annealing_region(self, template_seq: str, center_pos: int, min_length: int = 18, 
-                                     min_tm: float = 55.0, max_total: int = 80) -> Tuple[int, int]:
+                                     min_tm: float = 55.0, max_total: int = 100) -> Tuple[int, int]:
         """最適なアニーリング領域を見つける"""
         best_start, best_end = center_pos - min_length//2, center_pos + min_length//2
         
@@ -372,9 +372,9 @@ class OptimizedSaturationDesigner:
             reverse_seq = self.reverse_complement(forward_seq)
             
             # 長さ制限チェック
-            if len(forward_seq) > 60:
+            if len(forward_seq) > 100:
                 # 長すぎる場合はオーバーラップを調整
-                excess = len(forward_seq) - 60
+                excess = len(forward_seq) - 100
                 overlap_length_adj = max(15, overlap_length - excess//2)
                 left_overlap = template_seq[max(0, anneal_start - overlap_length_adj):anneal_start]
                 right_overlap = template_seq[anneal_end:min(len(template_seq), anneal_end + overlap_length_adj)]
@@ -433,8 +433,8 @@ class OptimizedSaturationDesigner:
             reverse_seq = self.reverse_complement(forward_seq)
             
             # 長さ調整
-            if len(forward_seq) > 60:
-                excess = len(forward_seq) - 60
+            if len(forward_seq) > 100:
+                excess = len(forward_seq) - 100
                 overlap_length_adj = max(15, overlap_length - excess//2)
                 left_overlap = template_seq[max(0, anneal_start - overlap_length_adj):anneal_start]
                 right_overlap = template_seq[anneal_end:min(len(template_seq), anneal_end + overlap_length_adj)]
@@ -508,7 +508,7 @@ def main():
         **設計条件:**
         - アニーリング部: Tm ≥ 55°C, ≥ 18bp
         - オーバーラップ: {overlap_length}bp
-        - 全長: 40bp推奨, 最大60bp
+        - 全長: 40bp推奨, 最大100bp
         - ベクター準備: {vector_method}
         
         **入力形式:**
