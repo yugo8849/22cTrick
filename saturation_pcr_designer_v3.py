@@ -1193,17 +1193,17 @@ def main():
         st.header("📊 設計結果")
         
             # 統計情報
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                st.metric("Saturation", f"{st.session_state.stats['total_sat_primers']} プライマー")
-            with col2:
-                st.metric("Vector", f"{st.session_state.stats['total_vector_oligos']} オリゴ")
-            with col3:
-                st.metric("ライブラリー", f"{st.session_state.stats['total_combinations']} 組合せ")
-            with col4:
-                st.metric("95%カバレッジ", f"{st.session_state.stats['coverage_95_percent']} クローン")
-            with col5:
-                st.metric("効率", f"{st.session_state.stats['library_efficiency']:.1%}")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        with col1:
+            st.metric("Saturation", f"{st.session_state.stats['total_sat_primers']} プライマー")
+        with col2:
+            st.metric("Vector", f"{st.session_state.stats['total_vector_oligos']} オリゴ")
+        with col3:
+            st.metric("ライブラリー", f"{st.session_state.stats['total_combinations']} 組合せ")
+        with col4:
+            st.metric("95%カバレッジ", f"{st.session_state.stats['coverage_95_percent']} クローン")
+        with col5:
+            st.metric("効率", f"{st.session_state.stats['library_efficiency']:.1%}")
         
         # ベクター準備方法の表示
         vector_method = st.session_state.get('vector_method', 'PCR')
