@@ -328,7 +328,7 @@ class OptimizedSaturationDesigner:
         return sat_primers, vector_oligos
     
     def _find_optimal_annealing_region(self, template_seq: str, center_pos: int, min_length: int = 18, 
-                                     min_tm: float = 55.0, max_total: int = 60) -> Tuple[int, int]:
+                                     min_tm: float = 55.0, max_total: int = 80) -> Tuple[int, int]:
         """最適なアニーリング領域を見つける"""
         best_start, best_end = center_pos - min_length//2, center_pos + min_length//2
         
